@@ -1,10 +1,11 @@
 import { Redis } from '@upstash/redis'
 import { VercelRequest, VercelResponse } from '@vercel/node';
 
-// This automatically finds your UPSTASH_REDIS_REST_URL 
-// and TOKEN from the .env file you just pulled!
-const redis = Redis.fromEnv()
-
+// This looks for BOTH naming conventions so it never crashes
+const redis = new Redis({
+  url: process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL,
+  token: process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN,
+})
 export default async function handler(req: VercelRequest, res: VercelResponse) {
     // 1. Get the visitor's location from Vercel's Edge headers
     const visitorCity = req.headers['x-vercel-ip-city'] || "a mystery location";
