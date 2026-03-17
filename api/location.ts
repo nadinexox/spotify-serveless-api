@@ -27,3 +27,5 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         myCity: myLocation.city,
         distance: distance,
         display: `currently in ${myLocation.city} • ${distance} miles from you`
+    });
+}
