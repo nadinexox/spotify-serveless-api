@@ -1,47 +1,56 @@
 import { Redis } from '@upstash/redis'
 import { VercelRequest, VercelResponse } from '@vercel/node';
 
-// This looks for BOTH naming conventions so it never crashes
+// Connect using your specific environment variable names
 const redis = new Redis({
-  url: process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL,
-  token: process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN,
+  url: process.env.KV_REST_API_URL || "",
+  token: process.env.KV_REST_API_TOKEN || "",
 })
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-    // 1. Get the visitor's location from Vercel's Edge headers
-    const visitorCity = req.headers['x-vercel-ip-city'] || "a mystery location";
-    const visitorLat = parseFloat(req.headers['x-vercel-ip-latitude'] as string);
-    const visitorLng = parseFloat(req.headers['x-vercel-ip-longitude'] as string);
+    // 1. Enable CORS for Framer
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+    if (req.method === 'OPTIONS') return res.status(200).end();
 
     try {
-        // 2. Fetch YOUR current location from your new Upstash database
-        // We set a fallback (Geisel Library) in case the database is empty
+        // 2. Fetch your position (Fallback to UCSD Geisel Library coordinates)
         const myLocation: any = await redis.get('current_pos') || { 
+            city: "San Diego", 
             lat: 32.8811, 
-            lng: -117.2374, 
-            city: "San Diego" 
+            lng: -117.2374 
         };
 
-        // 3. The Math: Calculate miles between you and the visitor
-        const R = 3958.8; // Earth's radius in miles
-        const dLat = (myLocation.lat - visitorLat) * (Math.PI / 180);
-        const dLon = (myLocation.lng - visitorLng) * (Math.PI / 180);
+        // 3. Get Visitor coordinates (Safety: Fallback to your coordinates if Vercel can't find them)
+        const vLat = parseFloat(req.headers['x-vercel-ip-latitude'] as string) || myLocation.lat;
+        const vLng = parseFloat(req.headers['x-vercel-ip-longitude'] as string) || myLocation.lng;
+
+        // 4. Distance Math (Haversine Formula)
+        const R = 3958.8; // Miles
+        const dLat = (myLocation.lat - vLat) * (Math.PI / 180);
+        const dLon = (myLocation.lng - vLng) * (Math.PI / 180);
         
         const a = 
             Math.sin(dLat/2) * Math.sin(dLat/2) +
-            Math.cos(visitorLat * (Math.PI / 180)) * Math.cos(myLocation.lat * (Math.PI / 180)) * Math.sin(dLon/2) * Math.sin(dLon/2);
+            Math.cos(vLat * (Math.PI / 180)) * Math.cos(myLocation.lat * (Math.PI / 180)) * Math.sin(dLon/2) * Math.sin(dLon/2);
             
         const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
         const distance = Math.round(R * c);
 
-        // 4. Send the data back to your Framer site
+        // 5. Send clean JSON back
         return res.status(200).json({
-            visitorCity,
-            myCity: myLocation.city,
-            distance: distance,
-            display: `currently in ${myLocation.city} • ${distance} miles from you`
+            myCity: myLocation.city || "San Diego",
+            distance: isNaN(distance) ? 0 : distance
         });
 
-    } catch (error) {
-        return res.status(500).json({ error: "Failed to connect to database" });
+    } catch (error: any) {
+        // If it still crashes, this tells us WHY in the browser
+        return res.status(500).json({ 
+            error: "Function Error", 
+            message: error.message 
+        });
     }
 }
