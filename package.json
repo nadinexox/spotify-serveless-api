@@ -1,3 +1,5 @@
+npm install @upstash/redis
+
 {
   "name": "spotify-now-playing",
   "version": "1.0.0"
