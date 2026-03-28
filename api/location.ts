@@ -47,10 +47,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         });
 
     } catch (error: any) {
-        // If it still crashes, this tells us WHY in the browser
-        return res.status(500).json({ 
-            error: "Function Error", 
-            message: error.message 
-        });
-    }
+    return res.status(500).json({ 
+        error: "Function Error", 
+        message: error.message,
+        stack: error.stack  // add this temporarily
+    })
+}
 }
