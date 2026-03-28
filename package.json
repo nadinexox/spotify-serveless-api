@@ -1,4 +1,8 @@
 {
   "name": "spotify-now-playing",
-  "version": "1.0.0"
+  "version": "1.0.0",
+  "dependencies": {
+    "@upstash/redis": "^1.34.0",
+    "@vercel/node": "^3.0.0"
+  }
 }
