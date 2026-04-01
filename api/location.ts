@@ -10,6 +10,7 @@ const corsHeaders = {
 
 const DEFAULT_LOCATION = {
     city: "San Diego",
+    state: "CA",
     lat: 32.8811,
     lng: -117.2374,
 }
@@ -63,11 +64,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         const distance = Math.round(R * c)
 
         return res.status(200).json({
-            myCity: myLocation.city || "San Diego",
-            distance: isNaN(distance) ? 0 : distance,
-            lat: cityLevel(myLocation.lat),
-            lng: cityLevel(myLocation.lng),
-        })
+    myCity: myLocation.city || "Westminster",
+    myState: myLocation.state || "CA",   // ← add this
+    distance: isNaN(distance) ? 0 : distance,
+})
     } catch (e) {
         return res.status(200).json({
             myCity: DEFAULT_LOCATION.city,
