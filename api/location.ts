@@ -14,6 +14,10 @@ const DEFAULT_LOCATION = {
     lng: -117.2374,
 }
 
+function cityLevel(coord: number): number {
+    return Math.round(coord * 10) / 10  // ~10km, city center only
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
     // always set CORS headers first — before anything else
     // this ensures they're present even if the function crashes later
