@@ -65,8 +65,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(200).json({
             myCity: myLocation.city || "San Diego",
             distance: isNaN(distance) ? 0 : distance,
-            lat: myLocation.lat,
-    lng: myLocation.lng,
+            lat: cityLevel(myLocation.lat),
+    lng: cityLevel(myLocation.lng),
 
         })
     } catch (e: any) {
