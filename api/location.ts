@@ -71,6 +71,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     } catch (e) {
         return res.status(200).json({
             myCity: DEFAULT_LOCATION.city,
+            myState: DEFAULT_LOCATION.state,
             distance: 0,
             lat: DEFAULT_LOCATION.lat,
             lng: DEFAULT_LOCATION.lng,
