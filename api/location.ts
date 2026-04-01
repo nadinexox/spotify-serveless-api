@@ -65,7 +65,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
         return res.status(200).json({
     myCity: myLocation.city || "Westminster",
-    myState: myLocation.state || "CA",   // ← add this
+    myState: (myLocation.state || "CA").toUpperCase(),  // always uppercase
     distance: isNaN(distance) ? 0 : distance,
 })
     } catch (e) {
