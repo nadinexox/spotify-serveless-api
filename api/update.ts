@@ -5,7 +5,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const { city, state, lat, lng, password } = req.query
 
     // password
-    if (password !== "ucsd_design") {
+    if (password !== process.env.LOCATION_UPDATE_PASSWORD) {
         return res.status(401).json({ error: "Unauthorized" })
     }
 
