@@ -1,4 +1,11 @@
 // /api/now-playing.ts
+//
+// Rate-limit safe: every visitor's browser asks this every few seconds, but Spotify is only asked
+// about once every 10 seconds in total. The answer, the Spotify token and any "slow down" (429)
+// from Spotify are kept in your Upstash Redis, which all of Vercel's servers share. On a 429 it
+// keeps showing the last song instead of an error.
+import { Redis } from '@upstash/redis';
+
 export const config = {
   runtime: 'edge'
 };
@@ -153,6 +160,120 @@ async function extractGradientColors(imageUrl: string): Promise<[string, string,
 }
 
 
+const FRESH_SECONDS = 10;     // how long one Spotify answer is reused for everyone
+const FALLBACK_COLORS = ['#7ec8a0', '#6ab5c4', '#a89fd8'];
+
+const redis = new Redis({
+  url: process.env.KV_REST_API_URL || '',
+  token: process.env.KV_REST_API_TOKEN || '',
+});
+
+type Cached = { at: number; body: Record<string, unknown> };
+
+function json(body: unknown, status = 200, cache = `public, s-maxage=${FRESH_SECONDS}, stale-while-revalidate=30`) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'Content-Type': 'application/json', 'Cache-Control': cache, ...corsHeaders },
+  });
+}
+
+// Redis is a helper, never a blocker: if it's down, the API still works like before
+async function rget<T>(...keys: string[]): Promise<(T | null)[]> {
+  try { return (await redis.mget<(T | null)[]>(...keys)) ?? keys.map(() => null); }
+  catch { return keys.map(() => null); }
+}
+async function rset(key: string, value: unknown, seconds?: number) {
+  try { seconds ? await redis.set(key, value, { ex: Math.max(1, Math.round(seconds)) }) : await redis.set(key, value); }
+  catch {}
+}
+
+class RateLimited extends Error {
+  constructor(public retryAfter: number) { super('Spotify API request failed: 429'); }
+}
+
+async function getAccessToken(cachedToken: string | null): Promise<string> {
+  if (cachedToken) return cachedToken;
+  const tokenResponse = await fetch('https://accounts.spotify.com/api/token', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'Authorization': `Basic ${btoa(
+        `${process.env.SPOTIFY_CLIENT_ID}:${process.env.SPOTIFY_CLIENT_SECRET}`
+      )}`
+    },
+    body: new URLSearchParams({
+      grant_type: 'refresh_token',
+      refresh_token: process.env.SPOTIFY_REFRESH_TOKEN as string
+    })
+  });
+  if (tokenResponse.status === 429) {
+    throw new RateLimited(Number(tokenResponse.headers.get('retry-after')) || 60);
+  }
+  if (!tokenResponse.ok) {
+    throw new Error(`Token request failed: ${tokenResponse.status}`);
+  }
+  const { access_token, expires_in } = await tokenResponse.json() as TokenResponse & { expires_in?: number };
+  // keep it for its whole life (usually 1 hour), minus a minute of safety
+  await rset('np:token', access_token, (expires_in || 3600) - 60);
+  return access_token;
+}
+
+async function askSpotify(cachedToken: string | null): Promise<Record<string, unknown>> {
+  let access_token = await getAccessToken(cachedToken);
+  let response = await fetch('https://api.spotify.com/v1/me/player/currently-playing', {
+    headers: { Authorization: `Bearer ${access_token}` }
+  });
+
+  // saved token expired early → get a fresh one and try once more
+  if (response.status === 401 && cachedToken) {
+    access_token = await getAccessToken(null);
+    response = await fetch('https://api.spotify.com/v1/me/player/currently-playing', {
+      headers: { Authorization: `Bearer ${access_token}` }
+    });
+  }
+
+  if (response.status === 429) {
+    throw new RateLimited(Number(response.headers.get('retry-after')) || 60);
+  }
+  if (response.status === 204) {
+    return { isPlaying: false };
+  }
+  if (!response.ok) {
+    throw new Error(`Spotify API request failed: ${response.status}`);
+  }
+
+  const data = await response.json() as SpotifyResponse;
+  const albumImageUrl = data.item?.album?.images[0]?.url || '';
+
+  const [color1, color2, color3] = data.is_playing && albumImageUrl
+    ? await extractGradientColors(albumImageUrl)
+    : FALLBACK_COLORS;
+
+  return {
+    isPlaying: data.is_playing,
+    title: data.item?.name || '',
+    artist: data.item?.artists[0]?.name || '',
+    album: data.item?.album?.name || '',
+    albumImageUrl,
+    progressMs: data.progress_ms || 0,
+    durationMs: data.item?.duration_ms || 0,
+    songUrl: data.item?.external_urls?.spotify || '',
+    color1,
+    color2,
+    color3,
+  };
+}
+
+// While Spotify has us on a time-out, keep the song moving forward on its own
+function aged(c: Cached): Record<string, unknown> {
+  const b = c.body;
+  if (b.isPlaying && typeof b.progressMs === 'number' && typeof b.durationMs === 'number') {
+    const progressMs = b.progressMs + (Date.now() - c.at);
+    if (progressMs < b.durationMs) return { ...b, progressMs };
+  }
+  return b;
+}
+
 export default async function handler(request: Request) {
   // Handle CORS preflight request
   if (request.method === 'OPTIONS') {
@@ -162,92 +283,38 @@ export default async function handler(request: Request) {
     });
   }
 
-  try {
-      // Validate environment variables
-      if (!process.env.SPOTIFY_REFRESH_TOKEN || 
-          !process.env.SPOTIFY_CLIENT_ID || 
-          !process.env.SPOTIFY_CLIENT_SECRET) {
-        throw new Error('Missing required environment variables');
-      }
-  
-      // Get access token
-      const tokenResponse = await fetch('https://accounts.spotify.com/api/token', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'Authorization': `Basic ${btoa(
-            `${process.env.SPOTIFY_CLIENT_ID}:${process.env.SPOTIFY_CLIENT_SECRET}`
-          )}`
-        },
-        body: new URLSearchParams({
-          grant_type: 'refresh_token',
-          refresh_token: process.env.SPOTIFY_REFRESH_TOKEN
-        })
-      });
-  
-      if (!tokenResponse.ok) {
-        throw new Error(`Token request failed: ${tokenResponse.status}`);
-      }
-  
-      const { access_token } = await tokenResponse.json() as TokenResponse;
-  
-      // Get currently playing song
-      const response = await fetch('https://api.spotify.com/v1/me/player/currently-playing', {
-        headers: {
-          Authorization: `Bearer ${access_token}`
-        }
-      });
-  
-      if (response.status === 204) {
-        return new Response(JSON.stringify({ isPlaying: false }), {
-          headers: {
-            'Content-Type': 'application/json',
-            ...corsHeaders
-          }
-        });
-      }
-
-      if (!response.ok) {
-        throw new Error(`Spotify API request failed: ${response.status}`);
-      }
-
-      const data = await response.json() as SpotifyResponse;
-    const albumImageUrl = data.item?.album?.images[0]?.url || ''
- 
-    // extract colors server-side — runs in parallel with no extra round trip
-    const [color1, color2, color3] = data.is_playing && albumImageUrl
-      ? await extractGradientColors(albumImageUrl)
-      : ['#7ec8a0', '#6ab5c4', '#a89fd8']
-
-
-      return new Response(JSON.stringify({
-        isPlaying: data.is_playing,
-        title: data.item?.name || '',
-        artist: data.item?.artists[0]?.name || '',
-        album: data.item?.album?.name || '',
-        albumImageUrl,
-        progressMs: data.progress_ms || 0,
-        durationMs: data.item?.duration_ms || 0,
-        songUrl: data.item?.external_urls?.spotify || '',
-        color1,
-      color2,
-      color3,
-      }), {
-        headers: {
-          'Content-Type': 'application/json',
-          ...corsHeaders
-        }
-      });
-    } catch (error) {
-      return new Response(JSON.stringify({ 
-        error: 'Error fetching now playing',
-        details: error instanceof Error ? error.message : 'Unknown error'
-      }), {
-        status: 500,
-        headers: {
-          'Content-Type': 'application/json',
-          ...corsHeaders
-        }
-      });
-    }
+  if (!process.env.SPOTIFY_REFRESH_TOKEN ||
+      !process.env.SPOTIFY_CLIENT_ID ||
+      !process.env.SPOTIFY_CLIENT_SECRET) {
+    return json({ error: 'Error fetching now playing', details: 'Missing required environment variables' }, 500, 'no-store');
   }
+
+  // one Redis round trip: last answer, saved token, and whether Spotify told us to wait
+  const [last, token, blocked] = await rget<any>('np:last', 'np:token', 'np:blocked');
+  const lastAnswer = last as Cached | null;
+
+  // fresh enough → everyone shares it, Spotify isn't asked
+  if (lastAnswer && Date.now() - lastAnswer.at < FRESH_SECONDS * 1000) {
+    return json(aged(lastAnswer));
+  }
+  // Spotify said slow down → wait it out, keep showing the last song
+  if (blocked) {
+    return lastAnswer ? json(aged(lastAnswer)) : json({ isPlaying: false });
+  }
+
+  try {
+    const body = await askSpotify(token as string | null);
+    await rset('np:last', { at: Date.now(), body } satisfies Cached);
+    return json(body);
+  } catch (error) {
+    if (error instanceof RateLimited) {
+      await rset('np:blocked', 1, error.retryAfter);
+    }
+    if (lastAnswer) return json(aged(lastAnswer));
+    if (error instanceof RateLimited) return json({ isPlaying: false });
+    return json({
+      error: 'Error fetching now playing',
+      details: error instanceof Error ? error.message : 'Unknown error'
+    }, 500, 'no-store');
+  }
+}
