@@ -264,6 +264,12 @@ async function askSpotify(cachedToken: string | null): Promise<Record<string, un
   };
 }
 
+// Nothing saved yet and Spotify has us on a time-out: say so, instead of pretending nothing's playing
+function timeOut(until: number) {
+  const s = Math.max(0, Math.round(((Number.isFinite(until) ? until : Date.now()) - Date.now()) / 1000));
+  return { isPlaying: false, rateLimited: true, retryInSeconds: s, retryAt: new Date(Date.now() + s * 1000).toISOString() };
+}
+
 // While Spotify has us on a time-out, keep the song moving forward on its own
 function aged(c: Cached): Record<string, unknown> {
   const b = c.body;
@@ -299,7 +305,7 @@ export default async function handler(request: Request) {
   }
   // Spotify said slow down → wait it out, keep showing the last song
   if (blocked) {
-    return lastAnswer ? json(aged(lastAnswer)) : json({ isPlaying: false });
+    return lastAnswer ? json(aged(lastAnswer)) : json(timeOut(Number(blocked)));
   }
 
   try {
@@ -308,10 +314,10 @@ export default async function handler(request: Request) {
     return json(body);
   } catch (error) {
     if (error instanceof RateLimited) {
-      await rset('np:blocked', 1, error.retryAfter);
+      await rset('np:blocked', Date.now() + error.retryAfter * 1000, error.retryAfter);
     }
     if (lastAnswer) return json(aged(lastAnswer));
-    if (error instanceof RateLimited) return json({ isPlaying: false });
+    if (error instanceof RateLimited) return json(timeOut(Date.now() + error.retryAfter * 1000));
     return json({
       error: 'Error fetching now playing',
       details: error instanceof Error ? error.message : 'Unknown error'
