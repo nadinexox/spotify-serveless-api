@@ -305,7 +305,13 @@ export default async function handler(request: Request) {
   }
   // Spotify said slow down → wait it out, keep showing the last song
   if (blocked) {
-    return lastAnswer ? json(aged(lastAnswer)) : json(timeOut(Number(blocked)));
+    if (lastAnswer) return json(aged(lastAnswer));
+    // older saves stored just "1" here, so ask Redis how long the time-out has left
+    let until = Number(blocked);
+    if (!(until > 1e12)) {
+      try { until = Date.now() + Math.max(0, await redis.pttl('np:blocked')); } catch {}
+    }
+    return json(timeOut(until), 200, 'no-store');
   }
 
   try {
@@ -317,7 +323,7 @@ export default async function handler(request: Request) {
       await rset('np:blocked', Date.now() + error.retryAfter * 1000, error.retryAfter);
     }
     if (lastAnswer) return json(aged(lastAnswer));
-    if (error instanceof RateLimited) return json(timeOut(Date.now() + error.retryAfter * 1000));
+    if (error instanceof RateLimited) return json(timeOut(Date.now() + error.retryAfter * 1000), 200, 'no-store');
     return json({
       error: 'Error fetching now playing',
       details: error instanceof Error ? error.message : 'Unknown error'
